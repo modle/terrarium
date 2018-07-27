@@ -7,8 +7,13 @@
 
 #ifndef PHYSICS_HPP_
 #define PHYSICS_HPP_
+#include <ciso646>
 
+#include "fgeal/core.hpp"
 #include "fgeal/geometry.hpp"
+
+#include "physics_box2d.hpp"
+//#include "physics_chipmunk.hpp"
 
 namespace Physics
 {
@@ -23,12 +28,9 @@ namespace Physics
 	class World;
 
 	/** Represents a physical body. Note that almost all methods will crash if called when the body is detatched. */
-	class Body
+	class Body extends BodyImpl
 	{
 		friend class World;
-
-		struct Implementation;
-		Implementation* implementation;
 
 		public:
 
@@ -76,11 +78,8 @@ namespace Physics
 	};
 
 	/** Represents the world */
-	class World
+	class World extends WorldImpl
 	{
-		struct Implementation;
-		Implementation* implementation;
-
 		public:
 
 		World(Vector gravityAcceleration);

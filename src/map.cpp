@@ -19,8 +19,6 @@ using std::cout; using std::endl;
 #include "terrarium_game.hpp"
 #include "ingame_state.hpp"
 
-using futil::ends_with;
-
 static Physics::Vector GRAVITY = {0.0, 10.0};
 
 Map::Map(InGameState* state, int columns, int lines)
@@ -34,7 +32,7 @@ Map::Map(InGameState* state, const string filename)
 {
 	vector< vector<int> > file_grid;
 
-	(ends_with(filename, ".tmx")? parseGridFromFileTmx : parseGridFromFileTxt)(file_grid, filename);
+	(futil::ends_with(filename, ".tmx")? parseGridFromFileTmx : parseGridFromFileTxt)(file_grid, filename);
 
 	cout << "map size (in blocks): " << file_grid.size() << "x" << file_grid[0].size() << endl;
 
@@ -44,29 +42,16 @@ Map::Map(InGameState* state, const string filename)
 	{
 		for(unsigned int j = 0; j < file_grid[0].size() ; j++)
 		{
-			if(file_grid[i][j] == 1)
+			const int typeId = file_grid[i][j];
+			if(typeId != 0 and state->isBlockTypeIdExistent(typeId))
 			{
-				grid[i][j] = new Block(new Animation(state->tilesetDirt), i, j, 1);
+				grid[i][j] = new Block(new Animation(state->tilesets[typeId]), i, j, typeId, state->isBlockTypeIdPassable(typeId));
 				world->addBody(grid[i][j]->body);
 				retile(grid[i][j]);
 			}
-			else if(file_grid[i][j] == 2)
+			else if(typeId != 0)  // a non-registered non-zero type id is supposed to be wrong, so alert
 			{
-				grid[i][j] = new Block(new Animation(state->tilesetStone), i, j, 2);
-				world->addBody(grid[i][j]->body);
-				retile(grid[i][j]);
-			}
-			else if(file_grid[i][j] == 3)
-			{
-				grid[i][j] = new Block(new Animation(state->tilesetWater), i, j, 3, true);
-				world->addBody(grid[i][j]->body);
-				retile(grid[i][j]);
-			}
-			else if(file_grid[i][j] == 4)
-			{
-				grid[i][j] = new Block(new Animation(state->tilesetGrass), i, j, 4);
-				world->addBody(grid[i][j]->body);
-				retile(grid[i][j]);
+				cout << "at [" << i << ", " << j << "]: type id (" << typeId << ") not registered! ignoring..." << endl;
 			}
 		}
 	}
@@ -80,8 +65,10 @@ Map::~Map()
 		foreach(Block*, b, vector<Block*>, v)
 		{
 			if(b != null)
-				cout << string("deleting block ") + b->gridX + ", "+b->gridY << endl;;
-			delete b;
+			{
+//				cout << string("deleting block ") + b->gridX + ", "+b->gridY << endl;;
+				delete b;
+			}
 		}
 	}
 
@@ -102,7 +89,10 @@ void Map::saveToFile(const string& filename)
 		}
 	}
 
-	saveGridToFileTxt(idGrid, filename);
+	if(not futil::ends_with(filename, ".txt"))
+		saveGridToFileTxt(idGrid, filename + ".txt");
+	else
+		saveGridToFileTxt(idGrid, filename);
 }
 
 void Map::retileNeighbourhood(unsigned gridX, unsigned gridY)
@@ -156,13 +146,7 @@ Rectangle Map::computeDimensions()
 
 void Map::addBlock(unsigned gridX, unsigned gridY, unsigned typeId)
 {
-	Animation* referenceAnim = null;
-	if(typeId == 1) referenceAnim = state.tilesetDirt;
-	if(typeId == 2) referenceAnim = state.tilesetStone;
-	if(typeId == 3) referenceAnim = state.tilesetWater;
-	if(typeId == 4) referenceAnim = state.tilesetGrass;
-
-	grid[gridX][gridY] = new Block(new Animation(referenceAnim), gridX, gridY, typeId);
+	grid[gridX][gridY] = new Block(new Animation(state.tilesets[typeId]), gridX, gridY, typeId, state.isBlockTypeIdPassable(typeId));
 	world->addBody(grid[gridX][gridY]->body);
 	retile(grid[gridX][gridY]);
 }
@@ -243,4 +227,81 @@ void Map::drawOverlay()
 				grid[i][j]->draw(visibleArea);
 			}
 		}
+}
+
+void Map::updatePrecipitables()
+{
+	int grid_number_of_lines = grid.capacity();
+	int grid_number_of_columns = grid[0].capacity();
+
+	const Rectangle& visibleArea = state.visibleArea;
+
+	//draws all blocks that can be fully or partially seen, but not the ones that can't be seen
+	int start_i_index = visibleArea.x / BLOCK_SIZE;
+	int start_j_index = visibleArea.y / BLOCK_SIZE;
+	int finish_i_index = ((visibleArea.x + visibleArea.w) / BLOCK_SIZE) + 1;
+	int finish_j_index = (visibleArea.y + visibleArea.h) / BLOCK_SIZE;
+
+	//just to be safe
+	if( start_i_index < 0 ) start_i_index = 0;
+	else if( start_i_index >  grid_number_of_lines -1 ) start_i_index =  grid_number_of_lines -1;
+	if( start_j_index < 0 ) start_j_index = 0;
+	else if(start_j_index > grid_number_of_columns -1 ) start_j_index = grid_number_of_columns - 1;
+	if( finish_i_index < 0 ) finish_i_index = 0;
+	else if ( finish_i_index >  grid_number_of_lines -1 ) finish_i_index =  grid_number_of_lines -1;
+	if( finish_j_index < 0 ) finish_j_index = 0;
+	else if ( finish_j_index > grid_number_of_columns -1 ) finish_j_index = grid_number_of_columns-1;
+
+	//draw the corresponding blocks
+	for( int i = start_i_index ; i <= finish_i_index ; i++)
+	for( int j = start_j_index ; j <= finish_j_index ; j++)
+	{
+		if( grid[i][j] != null and grid[i][j]->typeID != 0)
+		{
+			const int typeId = grid[i][j]->typeID;
+			if(state.isBlockTypeIdExistent(typeId) and state.blockTypeInfo[typeId].precipitability != Block::Type::PRECIPITABILITY_NONE)
+			{
+				if(j+1 <= finish_j_index and grid[i][j+1] == null)  // free below
+				{
+					// send this block down
+					addBlock(i, j+1, typeId);
+					deleteBlock(i, j);
+				}
+
+				else if(j+1 <= finish_j_index and i > 0 and grid[i-1][j+1] == null   // If there’s an empty space down and to the left
+						and (grid[i-1][j] == null or grid[i][j+1]->typeID == typeId))  // avoids inadequate diagonal passing
+				{
+					// send this block down and to the left
+					addBlock(i-1, j+1, typeId);
+					deleteBlock(i, j);
+				}
+
+				else if(j+1 <= finish_j_index and i+1 <= finish_i_index and grid[i+1][j+1] == null   // If there’s an empty space down and to the right
+						and (grid[i+1][j] == null or grid[i][j+1]->typeID == typeId))  // avoids inadequate diagonal passing
+				{
+					// send this block down and to the right
+					addBlock(i+1, j+1, typeId);
+					deleteBlock(i, j);
+				}
+
+//				else if(i+1 <= finish_i_index and grid[i+1][j] == null  // free to the right
+//						and j > 0 and grid[i][j-1] != null and grid[i][j-1]->typeID == typeId)  // have more of it above
+//				{
+//					// send block above to the right
+//					addBlock(i+1, j, typeId);
+//					deleteBlock(i, j-1);
+//				}
+//
+//				else if(i > 0 and grid[i-1][j] == null  // free to the left
+//						and j > 0 and grid[i][j-1] != null and grid[i][j-1]->typeID == typeId)  // have more of it above
+//				{
+//					// send block above to the right
+//					addBlock(i-1, j, typeId);
+//					deleteBlock(i, j-1);
+//				}
+
+				//todo make cases for side sliping liquidous movement
+			}
+		}
+	}
 }

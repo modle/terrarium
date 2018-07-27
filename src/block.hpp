@@ -22,7 +22,7 @@ class Block extends public Entity
 	// grid position of this block
 	const unsigned gridX, gridY;
 
-	//constructors
+	// constructors
 	Block(Animation* anim, unsigned gridX, unsigned gridY, int typeID, bool ignoreCollision=false);
 
 	void draw(const Rectangle& visibleArea);
@@ -53,6 +53,23 @@ class Block extends public Entity
 			LEFT_COVERED,
 			FULL_FREE
 		};
+	};
+
+	// holds some logic information about a type ID
+	struct Type
+	{
+		unsigned id;
+		std::string name, description;
+		bool pickaxeMinerable;
+		int detatchedItemTypeId;
+
+		enum Passability { PASSABILITY_NONE, PASSABILITY_FULL } passability;
+
+		enum Precipitability {
+			PRECIPITABILITY_NONE,
+			PRECIPITABILITY_LIQUIDOUS,
+			PRECIPITABILITY_ARENACEOUS
+		} precipitability;
 	};
 };
 

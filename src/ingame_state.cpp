@@ -7,30 +7,34 @@
 
 #include "ingame_state.hpp"
 
+#include "futil/collection_actions.hpp"
+#include "futil/language.hpp"
+#include "futil/string_actions.hpp"
+#include "futil/random.h"
+
+#include <cmath>
+#include <climits>
+
+// xxx debug
+#include <iostream>
+using std::cout;
+using std::endl;
+// xxx debug
+
 using Physics::Vector;
 using Physics::convertToPixels;
 using Physics::convertToMeters;
 using Physics::newVector;
-
+using fgeal::Image;
+using fgeal::Graphics;
 using fgeal::Event;
 using fgeal::EventQueue;
 using fgeal::Color;
 using fgeal::Menu;
 using fgeal::Keyboard;
 using fgeal::Mouse;
-
-#include <cmath>
-
-#include "futil/collection_actions.hpp"
-#include "futil/language.hpp"
-
 using futil::remove_element;
-
-// xxx debug
-#include <iostream>
-using std::cout; using std::endl;
-
-#include "items.hxx"
+using futil::Properties;
 
 // xxx hardcoded player body dimensions
 const float player_body_width = Physics::convertToMeters(25);
@@ -65,6 +69,12 @@ InGameState::~InGameState()
 	}
 
 	cout << "game stuff destructor..." << endl;
+
+	foreach(Actor*, a, vector<Actor*>, actors)
+	{
+		delete a;
+	}
+
 	foreach(Entity*, e, vector<Entity*>, entities)
 	{
 		delete e;
@@ -92,20 +102,16 @@ InGameState::~InGameState()
 
 void InGameState::initialize()
 {
-	fgeal::Display& display = fgeal::Display::getInstance();
-	Properties& config = TerrariumGame::CONFIG;
-
-	visibleArea.x = 0;
-	visibleArea.y = 0;
-	visibleArea.w = display.getWidth();
-	visibleArea.h = display.getHeight();
+	Properties& config = static_cast<TerrariumGame&>(game).logic.config;  // @suppress("Field cannot be resolved")
 
 	//loading font
 	font = new fgeal::Font(config.get("ingame.font.filename"), atoi(config.get("ingame.font.size").c_str()));
 	fontInventory = new fgeal::Font(config.get("ingame.inventory.font.filename"), atoi(config.get("ingame.inventory.font.size").c_str()));
 
+	hourDuration = config.getParsedCStrAllowDefault<double, atof>("ingame.hour_duration", 1);
+
 	//loading ingame menu
-	Rectangle menuSize = {visibleArea.w*0.5f-100, visibleArea.h*0.5f-32, 200, 64};
+	Rectangle menuSize = {0, 0, 200, 64};
 	inGameMenu = new Menu(menuSize, font, Color::ORANGE);
 	inGameMenu->addEntry("Resume");
 	inGameMenu->addEntry("Save and exit");
@@ -147,44 +153,166 @@ void InGameState::initialize()
 	anim.currentIndex = ANIM_PLAYER_STAND_RIGHT;
 
 	//loading player
-	entities.push_back(player = new Entity(&anim, null));
+	actors.push_back(player = new Actor(&anim, null, "player"));
+	player->typeID = 0;
 
 	playerJumpImpulse = player_body_width*player_body_height * 0.5;
 	playerWalkForce =   player_body_width*player_body_height * 1.2;
 
 	//loading tilesets
-	tilesets.push_back(tilesetDirt =  Block::createBlockAnimationSet(new Image("resources/tileset-dirt.png")));
-	tilesets.push_back(tilesetStone = Block::createBlockAnimationSet(new Image("resources/tileset-stone.png")));
-	tilesets.push_back(tilesetWater = Block::createBlockAnimationSet(new Image("resources/tileset-water.png"), 3, 1.0));
-	tilesets.push_back(tilesetGrass = Block::createBlockAnimationSet(new Image("resources/tileset-grass.png")));
+	tilesets.push_back(null);  // null tileset (id 0)
+	for(unsigned i = 1; i < 1024; i++)	//xxx hardcoded limit for tilesets IDs
+	{
+		const string baseKey = "ingame.tileset"+futil::to_string(i), filenameKey = baseKey+".sprite.filename";
+		if(config.containsKey(filenameKey))
+		{
+			cout << "loading tileset as specified by " << baseKey << " (\"" << config.get(filenameKey) << "\")..." << endl;
+			tilesets.push_back(Block::createBlockAnimationSet(
+				new Image(config.get(filenameKey)),
+				config.getParsedCStrAllowDefault<int, atoi>(baseKey+".sprite.frame_count", 1),
+				config.getParsedCStrAllowDefault<double, atof>(baseKey+".sprite.frame_duration", -1.0)));
+		}
+	}
 
-	//loading some icons
-	iconBlockDirt = new Sprite(tilesetDirt->sheet, BLOCK_SIZE, BLOCK_SIZE);
-	iconBlockDirt->scale.x = 0.5;
-	iconBlockDirt->scale.y = 0.5;
+	//loading actor types
+	actorTypeInfo.push_back(Actor::Type());  // null actor type (id 0)
+	for(unsigned i = 1; i < 1024; i++)	//xxx hardcoded limit for item type IDs
+	{
+		const string baseKey = "actor_type"+futil::to_string(i), nameKey = baseKey+".name";
+		if(config.containsKey(nameKey))
+		{
+			cout << "loading actor type as specified by " << baseKey << " (\"" << config.get(nameKey) << "\")..." << endl;
+			actorTypeInfo.push_back(Actor::Type());
+			Actor::Type& type = actorTypeInfo.back();
+			type.id = i;
+			type.name = config.get(nameKey);
+			type.description = config.get(baseKey+".description");
 
-	ITEM_TYPE_BLOCK_DIRT.icon = iconBlockDirt;
+			type.faction = config.get(baseKey+".faction");
 
-	iconBlockStone = new Sprite(tilesetStone->sheet, BLOCK_SIZE, BLOCK_SIZE);
-	iconBlockStone->scale.x = 0.5;
-	iconBlockStone->scale.y = 0.5;
+			type.maxHp = config.getParsedCStr<int, atoi>(baseKey+".max_hp", 1);
+//			type.mass = config.getParsedCStr<double, atof>(baseKey+".mass");
+			type.contactDamageFactor = config.getParsedCStr<int, atoi>(baseKey+".contact_damage_factor", 0);
 
-	ITEM_TYPE_BLOCK_STONE.icon = iconBlockStone;
+			string spriteFilenameKey = baseKey + ".sprite.filename";
+			if(config.containsKey(spriteFilenameKey))
+			{
+				StackedSingleSheetAnimation& actorAnim = *new StackedSingleSheetAnimation(new Image(config.get(spriteFilenameKey)));
 
-	images.push_back(new Image("resources/banana_pickaxe.png"));
-	iconPickaxeDev = new Sprite(images.back(), 24, 24);
-	ITEM_TYPE_PICKAXE_DEV.icon = iconPickaxeDev;
+				const unsigned actorSpriteWidth = atoi(config.get(baseKey+".sprite.width").c_str());
+				const unsigned actorSpriteHeight = atoi(config.get(baseKey+".sprite.height").c_str());
+
+				const unsigned actorAnimStandLeftFrameCount = atoi(config.get(baseKey+".sprite.anim.stand_left.frame_count").c_str());
+				const float actorAnimStandLeftFrameDuration = atof(config.get(baseKey+".sprite.anim.stand_left.frame_duration").c_str());
+				actorAnim.addSprite(actorSpriteWidth, actorSpriteHeight, actorAnimStandLeftFrameCount, actorAnimStandLeftFrameDuration);
+
+				const unsigned actorAnimStandRightFrameCount = atoi(config.get(baseKey+".sprite.anim.stand_right.frame_count").c_str());
+				const float actorAnimStandRightFrameDuration = atof(config.get(baseKey+".sprite.anim.stand_right.frame_duration").c_str());
+				actorAnim.addSprite(actorSpriteWidth, actorSpriteHeight, actorAnimStandRightFrameCount, actorAnimStandRightFrameDuration);
+
+				const unsigned actorAnimWalkLeftFrameCount = atoi(config.get(baseKey+".sprite.anim.walk_left.frame_count").c_str());
+				const float actorAnimWalkLeftFrameDuration = atof(config.get(baseKey+".sprite.anim.walk_left.frame_duration").c_str());
+				actorAnim.addSprite(actorSpriteWidth, actorSpriteHeight, actorAnimWalkLeftFrameCount, actorAnimWalkLeftFrameDuration);
+
+				const unsigned actorAnimWalkRightFrameCount = atoi(config.get(baseKey+".sprite.anim.walk_right.frame_count").c_str());
+				const float actorAnimWalkRightFrameDuration = atof(config.get(baseKey+".sprite.anim.walk_right.frame_duration").c_str());
+
+				actorAnim.addSprite(actorSpriteWidth, actorSpriteHeight, actorAnimWalkRightFrameCount, actorAnimWalkRightFrameDuration);
+
+				const unsigned actorSpriteReferencePixelX = atoi(config.get(baseKey+".sprite.reference_pixel.x").c_str());
+				const unsigned actorSpriteReferencePixelY = atoi(config.get(baseKey+".sprite.reference_pixel.y").c_str());
+				for(unsigned i = 0; i < actorAnim.sprites.size(); i++)
+				{
+					actorAnim[i].referencePixelX = actorSpriteReferencePixelX;
+					actorAnim[i].referencePixelY = actorSpriteReferencePixelY;
+				}
+
+				type.animation = &actorAnim;
+			}
+			else type.animation = null;
+		}
+	}
+
+	//loading items types
+	itemTypeInfo.push_back(Item::Type());  // null item type (id 0)
+	for(unsigned i = 1; i < 1024; i++)	//xxx hardcoded limit for item type IDs
+	{
+		const string baseKey = "item_type"+futil::to_string(i), nameKey = baseKey+".name";
+		if(config.containsKey(nameKey))
+		{
+			cout << "loading item type as specified by " << baseKey << " (\"" << config.get(nameKey) << "\")..." << endl;
+			itemTypeInfo.push_back(Item::Type());
+			Item::Type& type = itemTypeInfo.back();
+			type.id = i;
+			type.name = config.get(nameKey);
+			type.description = config.get(baseKey+".description");
+
+			type.stackingLimit = config.getParsedCStr<int, atoi>(baseKey+".stacking_limit", 1);
+			type.mass = config.getParsedCStr<double, atof>(baseKey+".mass");
+			type.isPlaceable = config.get(baseKey+".placeability", "none") == "ground";
+			type.isDiggingTool = config.get(baseKey+".usable_action", "none") == "mining";
+			type.itemSlotCount = config.getParsedCStr<int, atoi>(baseKey+".capaciousness", 0);
+			type.isStartupItem = config.get(baseKey+".is_startup_item", "false") == "true";
+			type.placedBlockTypeId = config.getParsedCStr<int, atoi>(baseKey+".placed_block_type_id", 0);
+
+			string iconKey = baseKey + ".icon.filename";
+			if(config.containsKey(iconKey))
+			{
+				type.icon = new Sprite(
+					new Image(config.get(iconKey)),
+					config.getParsedCStrAllowDefault<int, atoi>(baseKey+".icon.width", DEFAULT_ICON_SIZE),
+					config.getParsedCStrAllowDefault<int, atoi>(baseKey+".icon.height", DEFAULT_ICON_SIZE),
+					config.getParsedCStrAllowDefault<double, atof>(baseKey+".icon.frame_duration", -1.0),
+					config.getParsedCStrAllowDefault<int, atoi>(baseKey+".icon.raw_frame_count", -1),
+					config.getParsedCStrAllowDefault<int, atoi>(baseKey+".icon.raw_offset.x", 0),
+					config.getParsedCStrAllowDefault<int, atoi>(baseKey+".icon.raw_offset.y", 0),
+					true);
+
+				// default scale
+				if(type.icon->width  != DEFAULT_ICON_SIZE) type.icon->scale.x = DEFAULT_ICON_SIZE/(float)type.icon->width;
+				if(type.icon->height != DEFAULT_ICON_SIZE) type.icon->scale.y = DEFAULT_ICON_SIZE/(float)type.icon->height;
+
+				// optional scale
+				type.icon->scale.x = config.getParsedCStr<double, atof>(baseKey+".icon.scale.x", type.icon->scale.x);
+				type.icon->scale.y = config.getParsedCStr<double, atof>(baseKey+".icon.scale.y", type.icon->scale.y);
+			}
+			else type.icon = null;
+		}
+	}
+
+	// loading block types
+	blockTypeInfo.push_back(Block::Type());  // null block type (id 0)
+	for(unsigned i = 1; i < 1024; i++)	//xxx hardcoded limit for block type IDs
+	{
+		const string baseKey = "block_type"+futil::to_string(i), nameKey = baseKey+".name";
+		if(config.containsKey(nameKey))
+		{
+			cout << "loading block type as specified by " << baseKey << " (\"" << config.get(nameKey) << "\")..." << endl;
+			blockTypeInfo.push_back(Block::Type());
+			Block::Type& type = blockTypeInfo.back();
+			type.id = i;
+			type.name = config.get(nameKey);
+			type.description = config.get(baseKey+".description");
+			type.pickaxeMinerable = (config.get(baseKey+".minerable_by", "none") == "pickaxe");
+			type.detatchedItemTypeId = config.getParsedCStr<int, atoi>(baseKey+".detatched_item_type_id", 0);
+
+			string valueTxt = config.get(baseKey+".passability", "none");
+			if(valueTxt == "full") type.passability = Block::Type::PASSABILITY_FULL;
+			else type.passability = Block::Type::PASSABILITY_NONE;
+
+			valueTxt = config.get(baseKey+".precipitability", "none");
+			if(valueTxt == "liquidous") type.precipitability = Block::Type::PRECIPITABILITY_LIQUIDOUS;
+			else if(valueTxt == "arenaceous") type.precipitability = Block::Type::PRECIPITABILITY_ARENACEOUS;
+			else type.precipitability = Block::Type::PRECIPITABILITY_NONE;
+		}
+	}
 
 	//load bg
 	Image* bgImgDay = new Image(config.get("ingame.bg_day.filename"));
 	backgroundDay = new Sprite(bgImgDay, bgImgDay->getWidth(), bgImgDay->getHeight(), -1, -1, 0, 0, true);
-	backgroundDay->scale.x = fgeal::Display::getInstance().getWidth()  / backgroundDay->getCurrentFrame().w;
-	backgroundDay->scale.y = fgeal::Display::getInstance().getHeight() / backgroundDay->getCurrentFrame().h;
 
 	Image* bgImgNight = new Image(config.get("ingame.bg_night.filename"));
 	backgroundNight = new Sprite(bgImgNight, bgImgNight->getWidth(), bgImgNight->getHeight(), -1, -1, 0, 0, true);
-	backgroundNight->scale.x = fgeal::Display::getInstance().getWidth()  / backgroundNight->getCurrentFrame().w;
-	backgroundNight->scale.y = fgeal::Display::getInstance().getHeight() / backgroundNight->getCurrentFrame().h;
 
 	inventory = null;
 	inventoryColor = Color::parseCStr(config.get("ingame.inventory.color").c_str(), true);
@@ -199,15 +327,36 @@ void InGameState::initialize()
 
 void InGameState::onEnter()
 {
+	if(stageFilename.empty())
+	{
+		// todo throw a proper exception here
+		cout << "no stage filename specified!" << endl;
+		game.enterState(TerrariumGame::MAIN_MENU_STATE_ID);
+		return;
+	}
+
 	fgeal::Display& display = fgeal::Display::getInstance();
+
+	visibleArea.x = 0;
+	visibleArea.y = 0;
+	visibleArea.w = display.getWidth();
+	visibleArea.h = display.getHeight();
+
+	inGameMenu->bounds.x = 0.5f*(visibleArea.w - inGameMenu->bounds.w);
+	inGameMenu->bounds.y = 0.5f*(visibleArea.h - inGameMenu->bounds.h);
+
+	backgroundDay->scale.x = display.getWidth()  / backgroundDay->getCurrentFrame().w;
+	backgroundDay->scale.y = display.getHeight() / backgroundDay->getCurrentFrame().h;
+
+	backgroundNight->scale.x = display.getWidth()  / backgroundNight->getCurrentFrame().w;
+	backgroundNight->scale.y = display.getHeight() / backgroundNight->getCurrentFrame().h;
 
 	//setting flags
 	jumping = false;
 	inGameMenuShowing = false;
 
 	//loading map in world
-	TerrariumGame& game = *static_cast<TerrariumGame*>(&this->game);
-	map = new Map(this, game.stageFilename);
+	map = new Map(this, stageFilename);
 	cout << "map size (in pixels): " << map->computeDimensions().w << "x" << map->computeDimensions().h << endl;
 
 	//create player body for the newly created world and reset sprite animation
@@ -221,16 +370,62 @@ void InGameState::onEnter()
 		0.25f * display.getWidth(), 1.25f * BLOCK_SIZE,
 		0.5f  * display.getWidth(), 0.25f * display.getHeight()
 	};
-	inventory = new Inventory(inventoryBounds, fontInventory, new Item(ITEM_TYPE_BAG));
+
+	Inventory::GLOBAL_INVENTORY_ITEM_TYPE.name = "inventory";
+	Inventory::GLOBAL_INVENTORY_ITEM_TYPE.description = "the player's inventory";
+	Inventory::GLOBAL_INVENTORY_ITEM_TYPE.stackingLimit = 1;
+	Inventory::GLOBAL_INVENTORY_ITEM_TYPE.mass = 0.5;
+	Inventory::GLOBAL_INVENTORY_ITEM_TYPE.icon = null;
+	Inventory::GLOBAL_INVENTORY_ITEM_TYPE.isPlaceable = false;
+	Inventory::GLOBAL_INVENTORY_ITEM_TYPE.isDiggingTool = false;
+	Inventory::GLOBAL_INVENTORY_ITEM_TYPE.itemSlotCount = 32;
+
+	player->containerItem = new Item(Inventory::GLOBAL_INVENTORY_ITEM_TYPE);
+
+	inventory = new Inventory(inventoryBounds, fontInventory, player->containerItem);
 	inventory->color = inventoryColor;
 	inventory->colorFont = inventoryFontColor;
 	inventoryVisible = false;
 	cursorHeldItem = null;
 
-	// add pickaxe to player
-	inventory->add(new Item(ITEM_TYPE_PICKAXE_DEV));
+	if(not fgeal::filesystem::isFilenameArchive(characterFilename))
+		throw std::logic_error("character filename is not a valid file");
 
-	ingameTime = 0;
+	Properties charProp;
+	charProp.load(characterFilename);
+
+	if(charProp.containsKey("new") and charProp.get("new") == "true")
+	{
+		// add startup items to freshly created character
+		for(unsigned i = 0; i < itemTypeInfo.size(); i++)
+		{
+			if(itemTypeInfo[i].isStartupItem)
+				inventory->add(new Item(itemTypeInfo[i]));
+		}
+	}
+	else for(unsigned i = 0; i < inventory->container->type.itemSlotCount; i++)
+	{
+		const string baseKey = string("item") + futil::to_string(i),
+					 idKey = baseKey + "_id";
+
+		if(charProp.containsKey(idKey))
+		{
+			unsigned typeId = charProp.getParsedCStr<int, atoi>(idKey);
+			if(typeId != 0)
+			{
+				Item* item = new Item(itemTypeInfo[typeId]);
+				item->amount = charProp.getParsedCStr<int, atoi>(baseKey+"_amount", 1);
+				inventory->add(item);
+			}
+		}
+	}
+
+
+	player->label = charProp.get("name", "unamed");
+
+	ingameTime = 7*hourDuration*60;
+	inventoryItemHovered = null;
+	inventoryItemHoverTime = 0;
 }
 
 void InGameState::onLeave()
@@ -249,14 +444,20 @@ void InGameState::render()
 
 	/* needs to draw HUD */
 
-	const float period = 1440, timeOfDay = fmod(ingameTime, (double) period);
+	const float period = 24*hourDuration*60, timeOfDay = fmod(ingameTime, (double) period);
 
-	if(timeOfDay < 0.625*period)
+	if(timeOfDay > 0.25*period and timeOfDay < 0.75*period)
 		backgroundDay->draw();
 	else
 		backgroundNight->draw();
 
 	map->draw();
+
+	/* drawing others entities */
+	foreach(Actor*, actor, vector<Actor*>, actors)
+	{
+		actor->draw(visibleArea);
+	}
 
 	/* drawing others entities */
 	foreach(Entity*, entity, vector<Entity*>, entities)
@@ -266,12 +467,24 @@ void InGameState::render()
 
 	map->drawOverlay();
 
-	if(timeOfDay >= 0.5*period and timeOfDay < 0.9*period)
+	const float maxDarkening = 0.75;
+	Color darkFilterColor(0, 0, 0, 0);
+
+	// sunset
+	if(timeOfDay > 0.7*period)
 	{
-		const float proportion = (timeOfDay/period - 0.4)*2;
-		Color darkFilterColor(0, 0, 0, 500*(proportion-proportion*proportion));
-		Image::drawRectangle(darkFilterColor, 0, 0, display.getWidth(), display.getHeight());
+		const float proportion = (timeOfDay/period - 0.7)*(1/0.3);
+		darkFilterColor.a = UCHAR_MAX * maxDarkening * proportion;
 	}
+
+	// dawn
+	else if(timeOfDay < 0.3*period)
+	{
+		const float proportion = (0.3 - timeOfDay/period)*(1/0.3);
+		darkFilterColor.a = UCHAR_MAX * maxDarkening * proportion;
+	}
+
+	Graphics::drawFilledRectangle(0, 0, display.getWidth(), display.getHeight(), darkFilterColor);
 
 	/* later should be a character class */
 
@@ -282,18 +495,28 @@ void InGameState::render()
 		font->drawText(string("x: ")+player->body->getX()+" y:"+player->body->getY(), 0, 28, Color::WHITE);
 		font->drawText("SPEED", 0, 42, Color::WHITE);
 		font->drawText(string("x: ")+player->body->getVelocity().x+" y: "+player->body->getVelocity().y, 0, 56, Color::WHITE);
-		font->drawText(string("Time: ")+(5+(int)(24*timeOfDay/period))+":00", 0, 72, Color::WHITE);
+		font->drawText(string("Time: ")+((int)(24*timeOfDay/period))+":00", 0, 72, Color::WHITE);
 		font->drawText(string("FPS: ")+game.getFpsCount(), 0, 96, Color::WHITE);
 	}
+
+	if     (player->currentHp >= 1.00 * player->maxHp) font->drawText("Unharmed", 0.8*display.getWidth(), 1.1*font->getHeight(), Color::CYAN);
+	else if(player->currentHp >  0.75 * player->maxHp) font->drawText("Good", 0.8*display.getWidth(), 1.1*font->getHeight(), Color::GREEN);
+	else if(player->currentHp >  0.50 * player->maxHp) font->drawText("Injured", 0.8*display.getWidth(), 1.1*font->getHeight(), Color::YELLOW);
+	else if(player->currentHp >  0.25 * player->maxHp) font->drawText("Badly Injured", 0.8*display.getWidth(), 1.1*font->getHeight(), Color::ORANGE);
+	else if(player->currentHp >  0.00 * player->maxHp) font->drawText("Near death", 0.8*display.getWidth(), 1.1*font->getHeight(), Color::RED);
+	else 										       font->drawText("Dead", 0.8*display.getWidth(), 1.1*font->getHeight(), Color::MAROON);
 
 	if(inventoryVisible)
 		inventory->draw();
 
-	if(inGameMenuShowing)
-		inGameMenu->draw();
-
 	if(cursorHeldItem != null)
 		cursorHeldItem->draw(Mouse::getPositionX(), Mouse::getPositionY(), font, Color::BLACK);
+
+	if(inventoryItemHovered != null and (fgeal::uptime() - inventoryItemHoverTime) > 1.0)
+		font->drawText(itemTypeInfo[inventoryItemHovered->type.id].name, Mouse::getPositionX(), Mouse::getPositionY() - font->getHeight(), Color::BLACK);
+
+	if(inGameMenuShowing)
+		inGameMenu->draw();
 }
 
 void InGameState::update(float delta)
@@ -347,35 +570,57 @@ void InGameState::update(float delta)
 
 	this->handleInput();
 	map->world->step(delta, 6, 2);
+	map->updatePrecipitables();
 	ingameTime += delta;
 
+
+	// todo spawn dummy enemies
+	if(actors.size() < 2 and futil::random_between(0, 500) == 0)
+	{
+		cout << "adding dummy mob..." << endl;
+		const int typeId = 1;  // xxx hardcoded type id
+		Actor* enemy = new Actor(actorTypeInfo[typeId].animation, null, actorTypeInfo[typeId].name);
+		enemy->typeID = typeId;
+		enemy->body = new Body(1, 1, Physics::convertToMeters(enemy->animation->current().width), Physics::convertToMeters(enemy->animation->current().height));
+		map->world->addBody(enemy->body);
+		enemy->body->setFixedRotation();
+		enemy->animation->currentIndex = ANIM_PLAYER_STAND_RIGHT;
+		actors.push_back(enemy);
+	}
+
+	foreach(Actor*, actor, vector<Actor*>, actors)
+	{
+		if(actor->typeID != 0)
+			actor->behave(delta);
+	}
+
+	// trashing out stuff
 	vector<Entity*> trash;
 	foreach(Entity*, entity, vector<Entity*>, entities)
 	{
-		if(entity != player)
+		Item* entityItem = entityItemMapping[entity];
+		const bool isNotItemOrCanAdd = (entityItem == null or inventory->canAdd(entityItem));
+
+		const Physics::Vector distanceVector = player->body->getCenter() - entity->body->getCenter();
+		const double distanceLength = distanceVector.length();
+
+		if(distanceLength < 0.1 and isNotItemOrCanAdd)
 		{
-			Item* entityItem = entityItemMapping[entity];
-			const bool isNotItemOrCanAdd = (entityItem == null or inventory->canAdd(entityItem));
+			trash.push_back(entity);
 
-			const Physics::Vector distanceVector = player->body->getCenter() - entity->body->getCenter();
-			const double distanceLength = distanceVector.length();
-
-			if(distanceLength < 0.1 and isNotItemOrCanAdd)
+			if(entityItem != null)
 			{
-				trash.push_back(entity);
+				cout << itemTypeInfo[entityItem->id].name << " eaten" << endl;
 
-				if(entityItem != null)
-				{
-					inventory->add(entityItem);
-					entityItemMapping.erase(entity);
-				}
+				inventory->add(entityItem);
+				entityItemMapping.erase(entity);
 			}
+		}
 
-			else if(distanceLength < 0.8 and isNotItemOrCanAdd)
-			{
-				const double magnetude = 0.05*(1-1/(1+distanceLength));
-				entity->body->applyForceToCenter(distanceVector.unit().scale(magnetude));
-			}
+		else if(distanceLength < 0.8 and isNotItemOrCanAdd)
+		{
+			const double magnetude = 0.05*(1-1/(1+distanceLength));
+			entity->body->applyForceToCenter(distanceVector.unit().scale(magnetude));
 		}
 	}
 	foreach(Entity*, entity, vector<Entity*>, trash)
@@ -397,7 +642,14 @@ void InGameState::handleInput()
 		{
 			game.enterState(TerrariumGame::MAIN_MENU_STATE_ID);
 		}
-		else if(event.getEventType() == fgeal::Event::TYPE_KEY_RELEASE)
+
+		if(inGameMenuShowing)
+		{
+			handleInputOnInGameMenu(event);
+			continue;
+		}
+
+		if(event.getEventType() == fgeal::Event::TYPE_KEY_RELEASE)
 		{
 			switch(event.getEventKeyCode())
 			{
@@ -421,42 +673,17 @@ void InGameState::handleInput()
 		{
 			switch(event.getEventKeyCode())
 			{
-				case fgeal::Keyboard::KEY_ARROW_UP:
-					if(inGameMenuShowing)
-						inGameMenu->cursorUp();
-					break;
-
-				case fgeal::Keyboard::KEY_ARROW_DOWN:
-					if(inGameMenuShowing)
-						inGameMenu->cursorDown();
-					break;
-
 				case fgeal::Keyboard::KEY_ESCAPE:
-					inGameMenuShowing = !inGameMenuShowing;
-					break;
-
-				case fgeal::Keyboard::KEY_ENTER:
-					if(inGameMenuShowing)
-					{
-						switch(inGameMenu->getSelectedIndex())
-						{
-							case 0:
-								inGameMenuShowing=false;
-								break;
-							case 1:
-								// todo create a dialog to choose file name
-								map->saveToFile("resources/maps/saved_map.txt");
-								game.enterState(TerrariumGame::MAIN_MENU_STATE_ID);
-								break;
-							case 2:
-								game.enterState(TerrariumGame::MAIN_MENU_STATE_ID);
-								break;
-						}
-					}
+					inGameMenuShowing = true;
 					break;
 
 				case fgeal::Keyboard::KEY_I:
 					inventoryVisible = !inventoryVisible;
+					if(not inventoryVisible)
+					{
+						inventoryItemHovered = null;
+						inventoryItemHoverTime = fgeal::uptime();
+					}
 					break;
 
 				default:
@@ -485,9 +712,12 @@ void InGameState::handleInput()
 				if(inventoryVisible and inventory->isPointWithin(event.getEventMouseX(), event.getEventMouseY()))
 				{
 					Item* itemOnSlot = inventory->getItemInSlotPointedBy(event.getEventMouseX(), event.getEventMouseY());
+					remove_element(inventory->container->items, itemOnSlot);
 
 					if(cursorHeldItem != null)
+					{
 						inventory->add(cursorHeldItem);
+					}
 
 					cursorHeldItem = itemOnSlot;
 				}
@@ -501,14 +731,10 @@ void InGameState::handleInput()
 						if(cursorHeldItem->type.isPlaceable and block == null)  // if placing a placeable item
 						{
 							bool didPlaceIt = false;
-							if(cursorHeldItem->type == ITEM_TYPE_BLOCK_DIRT)
+
+							if(isBlockTypeIdExistent(cursorHeldItem->type.placedBlockTypeId))
 							{
-								map->addBlock(mx, my, 1);
-								didPlaceIt = true;
-							}
-							if(cursorHeldItem->type == ITEM_TYPE_BLOCK_STONE)
-							{
-								map->addBlock(mx, my, 2);
+								map->addBlock(mx, my, cursorHeldItem->type.placedBlockTypeId);
 								didPlaceIt = true;
 							}
 
@@ -526,27 +752,76 @@ void InGameState::handleInput()
 						else if(cursorHeldItem->type.isDiggingTool and block != null)  // if using a digging tool
 						{
 							Item* item = null;
-							if(block->typeID == 1 or block->typeID == 4)
-								item = new Item(ITEM_TYPE_BLOCK_DIRT);
-							if(block->typeID == 2)
-								item = new Item(ITEM_TYPE_BLOCK_STONE);
+
+							if(isBlockTypeIdExistent(block->typeID) and blockTypeInfo[block->typeID].pickaxeMinerable)
+							{
+								int detatchedItemTypeId = blockTypeInfo[block->typeID].detatchedItemTypeId;
+								if(isBlockTypeIdExistent(detatchedItemTypeId))
+									item = new Item(itemTypeInfo[detatchedItemTypeId]);
+
+								map->deleteBlock(mx, my);
+							}
 
 							if(item != null)
 								this->spawnItemEntity(item, convertToMeters(mx*BLOCK_SIZE), convertToMeters(my*BLOCK_SIZE));
-
-							map->deleteBlock(mx, my);
 						}
 					}
 				}
 			}
-			else if (event.getEventMouseButton() == fgeal::Mouse::BUTTON_MIDDLE)
-			{
-				const float posx = convertToMeters(visibleArea.x + event.getEventMouseX()),
-							posy = convertToMeters(visibleArea.y + event.getEventMouseY());
+		}
 
-				Item* dirtBlockItem = new Item(ITEM_TYPE_BLOCK_DIRT);
-				this->spawnItemEntity(dirtBlockItem, posx, posy);
+		else if(event.getEventType() == fgeal::Event::TYPE_MOUSE_MOTION)
+		{
+			if(inventoryVisible and inventory->isPointWithin(event.getEventMouseX(), event.getEventMouseY()))
+				inventoryItemHovered = inventory->getItemInSlotPointedBy(event.getEventMouseX(), event.getEventMouseY());
+			else
+			{
+				inventoryItemHovered = null;
+				inventoryItemHoverTime = fgeal::uptime();
 			}
+		}
+	}
+}
+
+void InGameState::handleInputOnInGameMenu(Event& event)
+{
+	if(event.getEventType() == fgeal::Event::TYPE_KEY_PRESS)
+	{
+		switch(event.getEventKeyCode())
+		{
+			case fgeal::Keyboard::KEY_ARROW_UP:
+				inGameMenu->moveCursorUp();
+				break;
+
+			case fgeal::Keyboard::KEY_ARROW_DOWN:
+				inGameMenu->moveCursorDown();
+				break;
+
+			case fgeal::Keyboard::KEY_ESCAPE:
+				inGameMenuShowing = false;
+				break;
+
+			case fgeal::Keyboard::KEY_ENTER:
+			{
+				TerrariumGame& game = static_cast<TerrariumGame&>(this->game);
+				switch(inGameMenu->getSelectedIndex())
+				{
+					case 0:
+						inGameMenuShowing=false;
+						break;
+					case 1:
+						map->saveToFile(stageFilename);
+						saveCharacterData();
+						game.enterState(TerrariumGame::MAIN_MENU_STATE_ID);
+						break;
+					case 2:
+						game.enterState(TerrariumGame::MAIN_MENU_STATE_ID);
+						break;
+				}
+			}
+			break;
+
+			default:break;
 		}
 	}
 }
@@ -555,11 +830,47 @@ void InGameState::spawnItemEntity(Item* item, float posx, float posy)
 {
 	const float physicalBlockSize = Physics::convertToMeters(BLOCK_SIZE);
 	Body* detatchedBlockBody = new Body(posx, posy, 0.5*physicalBlockSize, 0.5*physicalBlockSize, Body::Type::DROP);
-	Entity* detatchedBlock = new Entity(new Animation(new Sprite(*item->type.icon)), detatchedBlockBody);
+	Sprite* detatchedBlockSprite = new Sprite(item->type.icon->image, item->type.icon->width, item->type.icon->height, item->type.icon->duration,
+												item->type.icon->numberOfFrames, item->type.icon->rawOffsetX, item->type.icon->rawOffsetY, false);  // MUST PASS FALSE!!!
+	detatchedBlockSprite->scale = item->type.icon->scale;
+	Entity* detatchedBlock = new Entity(new Animation(detatchedBlockSprite), detatchedBlockBody);
 	map->world->addBody(detatchedBlockBody);
 	detatchedBlockBody->setFixedRotation(false);
 	detatchedBlockBody->applyForceToCenter(newVector(0.0f, -playerJumpImpulse*0.5));
 	entities.push_back(detatchedBlock);
 	entityItemMapping[detatchedBlock] = item;
-	cout << "pooped " << item->type.name << "!" << endl;
+	cout << "pooped out " << item->type.name << "!" << endl;
+}
+
+bool InGameState::isBlockTypeIdExistent(int id)
+{
+	return id > 0 and id < (int) blockTypeInfo.size();
+}
+
+bool InGameState::isBlockTypeIdPassable(int id)
+{
+	return blockTypeInfo[id].passability == Block::Type::PASSABILITY_FULL;
+}
+
+bool InGameState::isItemTypeIdExistant(int id)
+{
+	return id > 0 and id < (int) itemTypeInfo.size();
+}
+
+void InGameState::saveCharacterData()
+{
+	Properties charProp;
+	charProp.put("name", player->label);
+	for(unsigned i = 0; i < inventory->container->items.size(); i++)
+	{
+		Item* item = inventory->container->items[i];
+		if(item != null)
+		{
+			const string baseKey = string("item") + futil::to_string(i);
+			charProp.put(baseKey + "_id", futil::to_string(item->type.id));
+			charProp.put(baseKey + "_amount", futil::to_string(item->amount));
+		}
+	}
+
+	charProp.store(characterFilename);
 }

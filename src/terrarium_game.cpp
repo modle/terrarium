@@ -10,22 +10,18 @@
 #include "main_menu_state.hpp"
 #include "ingame_state.hpp"
 #include "loading_state.hpp"
-
-const int
-TerrariumGame::MAIN_MENU_STATE_ID = 0,
-TerrariumGame::INGAME_STATE_ID = 1,
-TerrariumGame::LOADING_STATE_ID = 2;
-
-Properties TerrariumGame::CONFIG;
+#include "options_menu_state.hpp"
 
 void TerrariumGame::initializeStatesList()
 {
 	this->addState(new MainMenuState(this));  // set initial by position
 	this->addState(new InGameState(this));
 	this->addState(new LoadingState(this));
+	this->addState(new OptionsMenuState(this));
 }
 
 TerrariumGame::TerrariumGame()
+: Game(), logic(*this)
 {
 	maxFps = 60;
 }

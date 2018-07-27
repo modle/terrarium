@@ -13,80 +13,17 @@
 
 using fgeal::Rectangle;
 using fgeal::Image;
+using fgeal::Graphics;
 using fgeal::Color;
 using fgeal::Font;
 using fgeal::Point;
 using std::string;
 using futil::remove_element;
 
-static unsigned ITEM_TYPE_ID_LAST = 0;
-
 static const Rectangle inventorySlotSize = {0, 0, BLOCK_SIZE * 1.5, BLOCK_SIZE * 1.5};
 
-Item::Type Item::Type::createBlockType(const std::string& name, const std::string& desc, float mass, unsigned stackLimit)
-{
-	Type t;
-	t.id = ++ITEM_TYPE_ID_LAST;
-	t.name = name;
-	t.description = desc;
-
-	t.stackingLimit = stackLimit;
-	t.mass = mass;
-	t.icon = null;
-
-	t.isPlaceable = true;
-
-	t.isDiggingTool = false;
-
-	t.itemSlotCount = 0;
-
-	return t;
-}
-
-Item::Type Item::Type::createToolType(const std::string& name, const std::string& desc, float mass, unsigned stackLimit, bool isDigger)
-{
-	Type t;
-	t.id = ++ITEM_TYPE_ID_LAST;
-	t.name = name;
-	t.description = desc;
-
-	t.stackingLimit = stackLimit;
-	t.mass = mass;
-	t.icon = null;
-
-	t.isPlaceable = false;
-
-	t.isDiggingTool = isDigger;
-
-	t.itemSlotCount = 0;
-
-	return t;
-}
-
-Item::Type Item::Type::createContainerType(const std::string& name, const std::string& desc, float mass, unsigned stackLimit, unsigned itemSlotCount)
-{
-	Type t;
-	t.id = ++ITEM_TYPE_ID_LAST;
-	t.name = name;
-	t.description = desc;
-
-	t.stackingLimit = stackLimit;
-	t.mass = mass;
-	t.icon = null;
-
-	t.isPlaceable = false;
-
-	t.isDiggingTool = false;
-
-	t.itemSlotCount = itemSlotCount;
-
-	return t;
-}
-
-static unsigned ITEM_ID_LAST = 0;
-
 Item::Item(const Type& type)
-: id(++ITEM_ID_LAST), type(type), amount(1)
+: id(type.id), type(type), amount(1)
 {}
 
 bool Item::canAdd(Item* item)
@@ -103,8 +40,10 @@ void Item::draw(float x, float y, Font* font, Color colorFont)
 	if(amount > 1)
 		font->drawText(futil::to_string(amount),
 			x + 0.95*inventorySlotSize.w - font->getTextWidth(futil::to_string(amount)),
-			y + 0.95*inventorySlotSize.h - font->getFontHeight(), colorFont);
+			y + 0.95*inventorySlotSize.h - font->getHeight(), colorFont);
 }
+
+Item::Type Inventory::GLOBAL_INVENTORY_ITEM_TYPE;
 
 Inventory::Inventory(const Rectangle& bounds, Font* font, Item* container)
 : bounds(bounds), font(font), color(128, 128, 128, 128), colorFont(Color::BLACK), container(container)
@@ -129,7 +68,7 @@ void Inventory::add(Item* item)
 		{
 			if(it->type == item->type and it->amount < it->type.stackingLimit)
 			{
-				it->amount++;
+				it->amount += item->amount;
 				delete item;
 				return;
 			}
@@ -159,11 +98,7 @@ Item* Inventory::getItemInSlotPointedBy(float ptx, float pty)
 			if(ptx > x and ptx < x + inventorySlotSize.w and
 			   pty > y and pty < y + inventorySlotSize.h and
 			   i < container->items.size())
-			{
-				Item* item = container->items[i];
-				remove_element(container->items, item);
-				return item;
-			}
+				return container->items[i];
 		}
 	}
 	return null;
@@ -171,15 +106,15 @@ Item* Inventory::getItemInSlotPointedBy(float ptx, float pty)
 
 void Inventory::draw()
 {
-	Image::drawRectangle(color, bounds.x, bounds.y, bounds.w, bounds.h);
-	Image::drawRectangle(Color::GREY, bounds.x, bounds.y, bounds.w, bounds.h, false);
+	Graphics::drawFilledRectangle(bounds.x, bounds.y, bounds.w, bounds.h, color);
+	Graphics::drawRectangle(bounds.x, bounds.y, bounds.w, bounds.h, Color::GREY);
 
 	const int slotsPerLine = (int) (bounds.w / inventorySlotSize.w);
 	for(unsigned i = 0; i < container->type.itemSlotCount; i++)
 	{
 		const float x = bounds.x + inventorySlotSize.w * (i % slotsPerLine) + 1;
 		const float y = bounds.y + inventorySlotSize.h * (i / slotsPerLine) + 1;
-		Image::drawRectangle(Color::LIGHT_GREY, x, y, inventorySlotSize.w, inventorySlotSize.h, false);
+		Graphics::drawRectangle(x, y, inventorySlotSize.w, inventorySlotSize.h, Color::LIGHT_GREY);
 
 		if(i < container->items.size())
 		{
@@ -192,7 +127,7 @@ void Inventory::draw()
 			if(item->amount > 1)
 				font->drawText(futil::to_string(item->amount),
 						x + 0.95*inventorySlotSize.w - font->getTextWidth(futil::to_string(item->amount)),
-						y + 0.95*inventorySlotSize.h - font->getFontHeight(), colorFont);
+						y + 0.95*inventorySlotSize.h - font->getHeight(), colorFont);
 		}
 	}
 }

@@ -30,12 +30,20 @@ class MainMenuState extends public fgeal::Game::State, public LoadingState::Load
 
 	bool wasInit;
 
-	fgeal::Image* background;
+	fgeal::Image* background, *imgCloud, *imgSun;
 	fgeal::Font* mainFont, *minorFont, *miniFont, *devFont;
 
-	Menu* mainMenu, *fileMenu;
+	Menu* mainMenu, *fileMenu, *charMenu;
 
-	bool chooseFile;
+	std::vector<fgeal::Rectangle> cloudies;
+
+	bool onMapFileSelectionDialog, onMapCreationDialog,
+		 onCharacterSelectionDialog, onCharacterCreationDialog;
+
+	int caret;
+	std::string mapCreationFilename, charCreationFilename, charCreationName;
+	bool isMapGenerationRequested, isMapCreationFilenameAlreadyExisting,
+		 isCharCreationPending, isCharCreationFilenameAlreadyExisting;
 
 	MainMenuState(TerrariumGame* game);
 	~MainMenuState();
@@ -46,6 +54,13 @@ class MainMenuState extends public fgeal::Game::State, public LoadingState::Load
 
 	void render();
 	void update(float delta);
+
+	void handleInput();
+	void handleInputOnMainMenu(fgeal::Event&);
+	void handleInputOnMapCreationDialog(fgeal::Event&);
+	void handleInputOnMapFileSelectionDialog(fgeal::Event&);
+	void handleInputOnCharSelectionDialog(fgeal::Event&);
+	void handleInputOnCharCreationDialog(fgeal::Event&);
 
 	// to be called by loading state
 	void loadDuringLoadingScreen();

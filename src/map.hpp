@@ -54,9 +54,9 @@ struct Map
 	/** Draws all the blocks that foregrounds the player */
 	void drawOverlay();
 
-	Rectangle computeDimensions();
+	void updatePrecipitables();
 
-	private:
+	Rectangle computeDimensions();
 
 	/// Loads the map grid from a raw txt file, based on the old terrarium "SDL" prototype
 	static void parseGridFromFileTxt(vector< vector<int> >& grid, const string& filename);
@@ -66,6 +66,9 @@ struct Map
 
 	/// Saves the map grid to a ram txt file.
 	static void saveGridToFileTxt(const vector< vector<int> >& grid, const string& filename);
+
+	/// transpose int matrix
+	static void transpose(vector< vector<int> >& matrix);
 };
 
 #endif /* MAP_HPP_ */

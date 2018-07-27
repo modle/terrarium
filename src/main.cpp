@@ -16,6 +16,7 @@ using futil::split;
 using futil::starts_with;
 
 #include <cstdlib>
+#include <ctime>
 #include <stdexcept>
 
 #include <iostream>
@@ -28,14 +29,13 @@ using std::string;
 #include <vector>
 using std::vector;
 
-const string VERSION = "0.1.7";
+const string VERSION = "0.2-dev";
 
 int main(int argc, char** argv)
 {
-	string title = "Project Terrarium";
-	title += " (v"; title += VERSION; title += ")";
-
+	srand(time(null));
 	int screenWidth = 640, screenHeight = 480;
+	bool fullscreen = false, centered=false;
 	for(int i = 0; i < argc; i++)
 	{
 		if(starts_with(string(argv[i]), "-r"))
@@ -59,15 +59,27 @@ int main(int argc, char** argv)
 			}
 			else cout << "Missing argument to -r parameter" << endl;
 		}
+
+		if(string(argv[i]) == "-f" or string(argv[i]) == "--fullscreen")
+			fullscreen = true;
+
+		if(string(argv[i]) == "-c" or string(argv[i]) == "--centered")
+			centered = true;
 	}
 
 	try
 	{
-		TerrariumGame::CONFIG.load("config.properties");
 		fgeal::initialize();
 
 		// only need to instantiate, engine will delete it when finalizing
-		fgeal::Display::create(screenWidth, screenHeight, title);
+		fgeal::Display::Options options;
+		options.title = "terrarium";
+		options.fullscreen = fullscreen;
+		options.width = screenWidth;
+		options.height = screenHeight;
+		options.iconFilename = "resources/terrarium.png";  // todo choose a proper icon
+		if(centered) options.positioning = fgeal::Display::Options::POSITION_CENTERED;
+		fgeal::Display::create(options);
 
 		// loading splash
 		Image* loading_image = new Image("./resources/loading.png");

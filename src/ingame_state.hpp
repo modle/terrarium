@@ -25,12 +25,14 @@
 
 #include "block.hpp"
 #include "entity.hpp"
+#include "actor.hpp"
 #include "map.hpp"
 #include "inventory.hpp"
 
 class InGameState extends public fgeal::Game::State
 {
 	friend class Map;
+	friend class TerrariumGameLogic;
 
 	bool wasInit;
 
@@ -49,19 +51,30 @@ class InGameState extends public fgeal::Game::State
 	// vector to keep track of images to delete them later
 	std::vector<fgeal::Image*> images;
 
-	StackedSingleSheetAnimation* tilesetDirt, *tilesetStone, *tilesetWater, *tilesetGrass;
-
 	// vector to record track of tileset animations to delete them later
 	std::vector<StackedSingleSheetAnimation*> tilesets;
+
+	std::vector<Actor::Type> actorTypeInfo;
+
+	// spec. of item types
+	std::vector<Item::Type> itemTypeInfo;
+
+	// spec. of block types
+	std::vector<Block::Type> blockTypeInfo;
 
 	// ==== entities
 
 	std::vector<Entity*> entities;
 
-	// the player, a separate entity
-	Entity* player;
+	// a pointer to the player actor
+	Actor* player;
+
+	// all actors, including the player, NPCs and enemies
+	std::vector<Actor*> actors;
 
 	// ==== logic
+
+	std::string stageFilename, characterFilename;
 
 	Map* map;
 
@@ -79,13 +92,25 @@ class InGameState extends public fgeal::Game::State
 
 	std::map<Entity*, Item*> entityItemMapping;
 
-	double ingameTime;
+	double ingameTime, hourDuration;
+
+	Item* inventoryItemHovered;
+	double inventoryItemHoverTime;
 
 	int getId() { return TerrariumGame::INGAME_STATE_ID; }
 
 	void handleInput();
+	void handleInputOnInGameMenu(fgeal::Event&);
 
 	void spawnItemEntity(Item* type, float posx, float posy);
+
+	bool isItemTypeIdExistant(int id);
+
+	void saveCharacterData();
+
+	// block type id info methods
+	bool isBlockTypeIdExistent(int id);
+	bool isBlockTypeIdPassable(int id);  // todo improve this check to allow a more refined passability
 
 	public:
 
